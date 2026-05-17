@@ -1,5 +1,6 @@
-"""通用文档爬虫 — HTTP 优先，SPA 自动降级 Playwright"""
+"""通用文档爬虫 — HTTP 优先，SPA 自动降级，增量更新"""
 import asyncio
+import hashlib
 import sys
 from pathlib import Path
 
@@ -9,6 +10,7 @@ from crawler.base import CrawlConfig, CrawlResult
 from crawler.http_crawler import HTTPCrawler
 from crawler.playwright import PlaywrightCrawler
 from crawler.content_detector import ContentDetector
+from crawler.change_detector import ChangeDetector
 from parser.html_parser import HTMLParser
 from chunker.semantic import SemanticChunker
 from storage.vector_store import VectorStore
@@ -29,6 +31,7 @@ def parse_args() -> dict:
         "urls_file": "",
         "strategy": "auto",
         "start_url": "",
+        "force": False,
     }
 
     i = 0
@@ -41,6 +44,9 @@ def parse_args() -> dict:
             i += 1
         elif args[i] == "--http":
             result["strategy"] = "http"
+            i += 1
+        elif args[i] == "--force":
+            result["force"] = True
             i += 1
         elif not args[i].startswith("-"):
             result["urls"].append(args[i])
@@ -63,34 +69,62 @@ def load_urls_from_file(path: str) -> list[str]:
     return urls
 
 
+async def filter_changed_urls(urls: list[str], change_detector: ChangeDetector, force: bool = False) -> list[str]:
+    """过滤出有变化的 URL"""
+    if force:
+        print(f"[变更检测] 强制模式，爬取全部 {len(urls)} 个 URL")
+        return urls
+
+    print(f"[变更检测] 检查 {len(urls)} 个 URL 是否更新...")
+    changed = []
+    skipped = 0
+
+    for i, url in enumerate(urls):
+        try:
+            if await change_detector.has_changed(url):
+                changed.append(url)
+            else:
+                skipped += 1
+                if (i + 1) % 20 == 0:
+                    print(f"  进度: {i+1}/{len(urls)} (跳过 {skipped})")
+        except Exception:
+            changed.append(url)  # 异常时保守爬取
+
+    print(f"[变更检测] 需更新: {len(changed)}, 可跳过: {skipped}")
+    return changed
+
+
 async def smart_crawl(
     start_url: str,
     config: CrawlConfig,
     url_list: list[str] = None,
+    force: bool = False,
 ) -> list[CrawlResult]:
     """
     智能爬取：
     1. HTTP 先试（快）
     2. ContentDetector 检测内容
     3. 无内容 → 降级 Playwright
+    4. ChangeDetector 检测变化，跳过未更新页面
     """
     detector = ContentDetector()
     http_crawler = HTTPCrawler()
     pw_crawler = PlaywrightCrawler()
+    metadata_db = MetadataDB(db_path="data/sqlite/metadata.db")
+    change_detector = ChangeDetector(metadata_db)
 
     # 确定 URL 列表
     if url_list:
         urls = url_list
         print(f"[爬取] 使用传入的 {len(urls)} 个 URL")
     else:
-        # 自动发现：先用 HTTP 看能不能拿到链接
+        # 自动发现
         print(f"[爬取] 从 {start_url} 自动发现页面...")
         http_results = await http_crawler.crawl(start_url, config)
         if http_results:
             urls = [r.url for r in http_results]
             print(f"[爬取] HTTP 发现 {len(urls)} 个页面")
         else:
-            # HTTP 失败，用 Playwright 发现
             print("[爬取] HTTP 未发现页面，尝试 Playwright 发现...")
             config.urls = [start_url]
             config.strategy = "playwright"
@@ -98,10 +132,15 @@ async def smart_crawl(
             urls = [r.url for r in pw_results]
             print(f"[爬取] Playwright 发现 {len(urls)} 个页面")
 
+    # 增量检测：过滤未变化的 URL
+    urls = await filter_changed_urls(urls, change_detector, force)
+    if not urls:
+        print("[爬取] 所有页面未更新，跳过")
+        return []
+
     # 策略选择
     strategy = config.strategy
     if strategy == "auto":
-        # 检测第一个页面判断是否需要 Playwright
         if urls:
             first_url = urls[0]
             print(f"[检测] 测试 {first_url} 是否需要渲染...")
@@ -126,14 +165,10 @@ async def smart_crawl(
         config.urls = urls
         results = await pw_crawler.crawl(start_url, config)
     else:
-        # auto 降级：逐个检测
         results = []
         http_failed = []
-
-        # 先批量 HTTP
         config.urls = urls
         http_results = await http_crawler.crawl(start_url, config)
-        http_urls = {r.url for r in http_results}
 
         for r in http_results:
             if detector.has_real_content(r.html):
@@ -141,13 +176,17 @@ async def smart_crawl(
             else:
                 http_failed.append(r.url)
 
-        # HTTP 失败的用 Playwright 补
         if http_failed:
             print(f"\n[降级] {len(http_failed)} 个页面需要 Playwright 渲染")
             config.urls = http_failed
             pw_results = await pw_crawler.crawl(start_url, config)
             results.extend(pw_results)
 
+    # 记录爬取结果（用于下次对比）
+    for r in results:
+        change_detector.record(r.url, r.html)
+
+    metadata_db.close()
     return results
 
 
@@ -159,12 +198,14 @@ async def main():
         print("  python crawl_all.py <URL>                     # 自动发现 + 爬取")
         print("  python crawl_all.py --urls urls.txt           # 从文件读取 URL 列表")
         print("  python crawl_all.py URL1 URL2 URL3            # 直接传入 URL")
+        print("  python crawl_all.py --force <URL>             # 强制全量爬取（忽略变更检测）")
         print("  python crawl_all.py --playwright <URL>        # 强制 Playwright")
         print("  python crawl_all.py --http <URL>              # 强制 HTTP")
         print()
         print("示例:")
         print("  python crawl_all.py https://docs.python.org/3/")
-        print("  python crawl_all.py --urls im_urls.txt")
+        print("  python crawl_all.py --urls urls.txt")
+        print("  python crawl_all.py --force --urls urls.txt   # 强制重新爬取所有页面")
         return
 
     config_data = load_config()
@@ -195,11 +236,11 @@ async def main():
     print(f"{'=' * 60}")
 
     # 爬取
-    crawl_results = await smart_crawl(start_url, crawl_config, url_list or None)
+    crawl_results = await smart_crawl(start_url, crawl_config, url_list or None, args["force"])
     print(f"\n爬取完成: {len(crawl_results)} 个页面")
 
     if not crawl_results:
-        print("未爬取到任何页面")
+        print("所有页面未更新或无内容")
         return
 
     # 初始化组件

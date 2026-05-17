@@ -1,0 +1,2 @@
+# 每天凌晨 2 点增量更新文档（自动跳过未变化页面）
+0 2 * * * cd /app && python crawl_all.py --urls urls.txt >> /var/log/crawl.log 2>&1

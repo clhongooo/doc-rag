@@ -1,0 +1,20 @@
+services:
+  doc-rag:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      # 持久化数据
+      - ./data/chroma:/app/data/chroma
+      - ./data/sqlite:/app/data/sqlite
+      - ./data/images:/app/data/images
+      # 缓存和配置
+      - ./.cache:/app/.cache
+      - ./urls.txt:/app/urls.txt:ro
+    environment:
+      - PYTHONUNBUFFERED=1
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/status"]
+      interval: 30s
+      timeout: 10s
+      retries: 3

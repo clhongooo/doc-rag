@@ -24,6 +24,41 @@ class MetadataDB:
                 breadcrumb TEXT
             )
         """)
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS pages (
+                url TEXT PRIMARY KEY,
+                last_modified TEXT,
+                etag TEXT,
+                content_hash TEXT,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        self.conn.commit()
+
+    def get_page(self, url: str) -> Optional[dict]:
+        """获取页面上次爬取的信息"""
+        cursor = self.conn.execute(
+            "SELECT url, last_modified, etag, content_hash, updated_at FROM pages WHERE url = ?",
+            (url,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return None
+        return {
+            "url": row[0],
+            "last_modified": row[1],
+            "etag": row[2],
+            "content_hash": row[3],
+            "updated_at": row[4],
+        }
+
+    def update_page(self, url: str, last_modified: str = "", etag: str = "", content_hash: str = "") -> None:
+        """更新页面爬取信息"""
+        self.conn.execute(
+            """INSERT OR REPLACE INTO pages (url, last_modified, etag, content_hash, updated_at)
+               VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)""",
+            (url, last_modified, etag, content_hash),
+        )
         self.conn.commit()
 
     def add(self, chunks: list) -> None:
@@ -56,6 +91,12 @@ class MetadataDB:
     def query_by_url(self, url: str) -> list[dict]:
         cursor = self.conn.execute("SELECT * FROM chunks WHERE url = ?", (url,))
         return [self._row_to_dict(row) for row in cursor.fetchall()]
+
+    def delete_by_url(self, url: str) -> int:
+        """删除指定 URL 的所有 chunks，返回删除数量"""
+        cursor = self.conn.execute("DELETE FROM chunks WHERE url = ?", (url,))
+        self.conn.commit()
+        return cursor.rowcount
 
     def count(self) -> int:
         cursor = self.conn.execute("SELECT COUNT(*) FROM chunks")
