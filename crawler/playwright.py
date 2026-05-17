@@ -1,5 +1,5 @@
+"""Playwright 爬虫 — 支持 SPA 渲染、URL 列表、浏览器复用"""
 import asyncio
-import re
 from typing import Optional
 from urllib.parse import urlparse
 
@@ -10,21 +10,68 @@ from .cache import CrawlCache
 
 
 class PlaywrightCrawler(BaseCrawler):
+    """通过 Playwright 渲染 SPA 页面，提取真实内容"""
+
+    # 常见内容容器选择器（按优先级排列）
+    DEFAULT_CONTENT_SELECTORS = [
+        # 文档框架
+        ".doc-article-content", ".doc-content", ".J-markdown-box",
+        ".markdown-body", ".rst-content", ".md-content",
+        # 通用
+        "article", "main", '[role="main"]',
+        "#content", ".content", ".page-content",
+        # 博客 / 文章
+        ".post-content", ".entry-content", ".article-body",
+        ".post-body", ".single-content",
+        # API 文档
+        ".api-content", ".docs-content", ".documentation-content",
+    ]
+
     def __init__(self):
         self.browser: Optional[Browser] = None
+        self._playwright = None
+
+    async def start(self):
+        """启动浏览器（可复用）"""
+        self._playwright = await async_playwright().start()
+        self.browser = await self._playwright.chromium.launch(headless=True)
+
+    async def stop(self):
+        """关闭浏览器"""
+        if self.browser:
+            await self.browser.close()
+            self.browser = None
+        if self._playwright:
+            await self._playwright.stop()
+            self._playwright = None
 
     async def crawl(self, url: str, config: CrawlConfig) -> list[CrawlResult]:
         cache = CrawlCache(config.cache_dir, ttl_seconds=config.cache_ttl) if config.cache_enabled else None
 
-        async with async_playwright() as p:
-            self.browser = await p.chromium.launch(headless=True)
+        # 确定 URL 列表：优先用传入的 urls，否则自动发现
+        if config.urls:
+            all_urls = config.urls
+            print(f"[Playwright] 使用传入的 {len(all_urls)} 个 URL")
+        else:
+            # 自动发现（需要启动浏览器）
+            if not self.browser:
+                await self.start()
             page = await self.browser.new_page()
+            try:
+                all_urls = await self._discover_urls(page, url, config)
+                print(f"[Playwright] 发现 {len(all_urls)} 个文档页面")
+            finally:
+                await page.close()
 
-            all_urls = await self._discover_all_urls(page, url, config)
-            print(f"发现 {len(all_urls)} 个文档页面")
+        # 逐页爬取
+        results = []
+        need_browser = not self.browser
+        if need_browser:
+            await self.start()
 
-            results = []
+        try:
             for i, doc_url in enumerate(all_urls):
+                # 缓存命中
                 if cache and cache.has(doc_url):
                     data = cache.get(doc_url)
                     results.append(CrawlResult(**data))
@@ -32,7 +79,7 @@ class PlaywrightCrawler(BaseCrawler):
                     continue
 
                 try:
-                    result = await self._fetch_page(page, doc_url, config)
+                    result = await self._fetch_page(doc_url, config)
                     if result:
                         results.append(result)
                         if cache:
@@ -43,30 +90,44 @@ class PlaywrightCrawler(BaseCrawler):
                                 "metadata": result.metadata,
                             })
                         print(f"[{i+1}/{len(all_urls)}] 完成: {result.title[:40]}")
+                    else:
+                        print(f"[{i+1}/{len(all_urls)}] 空内容: {doc_url}")
                 except Exception as e:
                     print(f"[{i+1}/{len(all_urls)}] 失败: {doc_url} - {e}")
 
                 await asyncio.sleep(config.delay_between_requests)
-
-            await self.browser.close()
-            self.browser = None
+        finally:
+            if need_browser:
+                await self.stop()
 
         return results
 
-    async def _discover_all_urls(self, page: Page, start_url: str, config: CrawlConfig) -> list[str]:
+    async def fetch_single(self, url: str, config: CrawlConfig) -> Optional[CrawlResult]:
+        """爬取单个页面（供外部调用，如 HTTP 降级）"""
+        need_browser = not self.browser
+        if need_browser:
+            await self.start()
+        try:
+            return await self._fetch_page(url, config)
+        finally:
+            if need_browser:
+                await self.stop()
+
+    async def _discover_urls(self, page: Page, start_url: str, config: CrawlConfig) -> list[str]:
+        """从起始 URL 发现子页面"""
         await page.goto(start_url, wait_until="domcontentloaded", timeout=config.timeout * 1000)
         await asyncio.sleep(3)
 
-        await self._expand_all_sections(page)
+        # 尝试展开侧边栏（失败则跳过，不影响后续）
+        try:
+            await self._expand_all_sections(page)
+        except Exception as e:
+            print(f"[Playwright] 侧边栏展开失败（跳过）: {e}")
 
         parsed = urlparse(start_url)
         base_domain = parsed.netloc
-        # 提取路径前缀：如 /docs/api/ → /docs/
-        path_parts = parsed.path.rstrip('/').split('/')
-        if len(path_parts) > 1:
-            path_prefix = '/'.join(path_parts[:2]) + '/'
-        else:
-            path_prefix = '/'
+        path_parts = parsed.path.rstrip("/").split("/")
+        path_prefix = "/".join(path_parts[:2]) + "/" if len(path_parts) > 1 else "/"
 
         all_urls = await page.evaluate("""
             (args) => {
@@ -87,14 +148,11 @@ class PlaywrightCrawler(BaseCrawler):
         return sorted(set(all_urls))
 
     async def _expand_all_sections(self, page: Page) -> None:
+        """展开侧边栏所有折叠节点（可选，失败不影响主流程）"""
         expand_selectors = [
-            '.tree-toggle',
-            '.expand-btn',
-            '.arrow-icon',
-            '[data-toggle="collapse"]',
-            '.parent-node',
-            '[class*="expand"]',
-            '[class*="toggle"]',
+            '.tree-toggle', '.expand-btn', '.arrow-icon',
+            '[data-toggle="collapse"]', '.parent-node',
+            '[class*="expand"]', '[class*="toggle"]',
         ]
 
         for _ in range(3):
@@ -108,73 +166,63 @@ class PlaywrightCrawler(BaseCrawler):
                                 await el.click()
                                 expanded = True
                                 await asyncio.sleep(0.2)
-                        except:
+                        except Exception:
                             pass
-                except:
+                except Exception:
                     pass
             if not expanded:
                 break
             await asyncio.sleep(0.5)
 
-    async def _fetch_page(self, page: Page, url: str, config: CrawlConfig) -> Optional[CrawlResult]:
+    async def _fetch_page(self, url: str, config: CrawlConfig) -> Optional[CrawlResult]:
+        """渲染单个页面并提取内容"""
         try:
-            await page.goto(url, wait_until="domcontentloaded", timeout=config.timeout * 1000)
-
-            # 等待正文内容加载
+            page = await self.browser.new_page()
             try:
-                await page.wait_for_selector(
-                    '.doc-content, .doc-article-content, .markdown-body, article, '
-                    '#content, .content, .page-content, .post-content, .entry-content, '
-                    '.article-body, [role="main"], main',
-                    timeout=10000,
-                )
-            except:
-                await asyncio.sleep(3)
+                await page.goto(url, wait_until="domcontentloaded", timeout=config.timeout * 1000)
 
-            title = await page.title()
+                # 等待正文加载
+                selectors_to_try = config.content_selector.split(",") if config.content_selector else self.DEFAULT_CONTENT_SELECTORS
+                try:
+                    await page.wait_for_selector(
+                        ", ".join(selectors_to_try[:5]),  # 取前5个尝试
+                        timeout=10000,
+                    )
+                except Exception:
+                    await asyncio.sleep(3)
 
-            # 通用正文提取：尝试多种常见框架的选择器
-            content_html = await page.evaluate("""
-                () => {
-                    const selectors = [
-                        // 常见文档框架
-                        '.doc-article-content', '.doc-content', '.markdown-body',
-                        '.J-markdown-box',
-                        // 通用内容容器
-                        'article', '#content', '.content', '.page-content',
-                        'main', '[role="main"]',
-                        // 博客/文章框架
-                        '.post-content', '.entry-content', '.article-body',
-                        '.post-body', '.single-content',
-                        // 通用 class 匹配
-                        '.doc-body', '.docs-article', '.docs-content',
-                        '.documentation-content', '.api-content',
-                    ];
-                    for (const sel of selectors) {
-                        const el = document.querySelector(sel);
-                        if (el && el.innerText && el.innerText.trim().length > 50) {
-                            return el.innerHTML;
-                        }
-                    }
-                    return '';
-                }
-            """)
+                title = await page.title()
 
-            # fallback: 尝试 main > body
-            if not content_html or len(content_html) < 100:
+                # 按优先级尝试选择器提取内容
                 content_html = await page.evaluate("""
-                    () => {
-                        const main = document.querySelector('main') || document.body;
-                        return main.innerHTML;
+                    (selectors) => {
+                        for (const sel of selectors) {
+                            const el = document.querySelector(sel);
+                            if (el && el.innerText && el.innerText.trim().length > 50) {
+                                return el.innerHTML;
+                            }
+                        }
+                        return '';
                     }
-                """)
+                """, selectors_to_try)
 
-            return CrawlResult(
-                url=url,
-                title=title or url,
-                html=content_html,
-            )
+                # fallback: main 或 body
+                if not content_html or len(content_html) < 100:
+                    content_html = await page.evaluate("""
+                        () => {
+                            const main = document.querySelector('main') || document.body;
+                            return main ? main.innerHTML : '';
+                        }
+                    """)
+
+                return CrawlResult(
+                    url=url,
+                    title=title or url,
+                    html=content_html,
+                )
+            finally:
+                await page.close()
 
         except Exception as e:
-            print(f"抓取失败 {url}: {e}")
+            print(f"[Playwright] 抓取失败 {url}: {e}")
             return None

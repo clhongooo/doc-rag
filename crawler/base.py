@@ -15,6 +15,12 @@ class CrawlConfig:
     url_patterns: list[str] = field(default_factory=list)
     max_retries: int = 3
     respect_robots: bool = True
+    # 新增：URL 列表（跳过自动发现）
+    urls: list[str] = field(default_factory=list)
+    # 爬取策略：auto=HTTP优先降级Playwright / http=仅HTTP / playwright=仅Playwright
+    strategy: str = "auto"
+    # 自定义内容选择器（空=自动检测）
+    content_selector: str = ""
 
 
 @dataclass
