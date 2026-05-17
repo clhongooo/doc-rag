@@ -9,10 +9,19 @@ if [ -f "urls.txt" ] && [ "$(python -c "import chromadb; c=chromadb.PersistentCl
     python crawl_all.py --urls urls.txt
 fi
 
-# 2. 启动 cron 定时更新（增量模式，自动跳过未变化页面）
+# 2. 启动 cron 定时更新（增量模式）
 echo "[启动] 启动定时更新 (每天凌晨 2 点)"
 cron
 
-# 3. 启动 API 服务
-echo "[启动] 启动 API 服务 (端口 8000)"
-exec python -m uvicorn api.server:app --host 0.0.0.0 --port 8000
+# 3. 根据环境变量选择模式
+MODE="${DOC_RAG_MODE:-api}"
+
+if [ "$MODE" = "mcp" ]; then
+    # MCP 模式：stdio 传输，供 Agent 调用
+    echo "[启动] MCP 模式 (stdio)"
+    exec python mcp_server.py
+else
+    # API 模式：HTTP 服务
+    echo "[启动] API 模式 (端口 8000)"
+    exec python -m uvicorn api.server:app --host 0.0.0.0 --port 8000
+fi

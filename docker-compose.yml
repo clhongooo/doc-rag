@@ -1,19 +1,18 @@
 services:
+  # API 服务模式（默认）
   doc-rag:
     build: .
     ports:
       - "8000:8000"
     volumes:
-      # 持久化数据
       - ./data/chroma:/app/data/chroma
       - ./data/sqlite:/app/data/sqlite
       - ./data/images:/app/data/images
-      # 缓存和配置
       - ./.cache:/app/.cache
       - ./urls.txt:/app/urls.txt:ro
     environment:
       - PYTHONUNBUFFERED=1
-      # LLM 地址（宿主机 llama-server）
+      - DOC_RAG_MODE=api
       - LLM_BASE_URL=http://host.docker.internal:8080/v1
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -22,3 +21,21 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
+
+  # MCP 模式（stdio，供 Agent 调用）
+  doc-rag-mcp:
+    build: .
+    volumes:
+      - ./data/chroma:/app/data/chroma
+      - ./data/sqlite:/app/data/sqlite
+      - ./data/images:/app/data/images
+      - ./.cache:/app/.cache
+    environment:
+      - PYTHONUNBUFFERED=1
+      - DOC_RAG_MODE=mcp
+      - LLM_BASE_URL=http://host.docker.internal:8080/v1
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # stdin_open + tty 用于 stdio 通信
+    stdin_open: true
+    tty: true
