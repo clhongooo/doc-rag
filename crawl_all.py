@@ -1,6 +1,7 @@
 """通用文档爬虫 — HTTP 优先，SPA 自动降级，增量更新"""
 import asyncio
 import hashlib
+import os
 import sys
 from pathlib import Path
 
@@ -66,6 +67,19 @@ def load_urls_from_file(path: str) -> list[str]:
             line = line.strip()
             if line and not line.startswith("#"):
                 urls.append(line)
+    return urls
+
+
+def load_urls_from_env() -> list[str]:
+    """从环境变量加载 URL 列表（逗号或换行分隔）"""
+    raw = os.getenv("CRAWL_URLS", "")
+    if not raw:
+        return []
+    urls = []
+    for item in raw.replace("\n", ",").split(","):
+        item = item.strip()
+        if item and item.startswith("http"):
+            urls.append(item)
     return urls
 
 
@@ -193,27 +207,27 @@ async def smart_crawl(
 async def main():
     args = parse_args()
 
-    if not args["urls"] and not args["urls_file"] and not args["start_url"]:
+    # 加载 URL：CLI 参数 > 环境变量 > urls.txt
+    url_list = list(args["urls"])
+    if args["urls_file"]:
+        url_list.extend(load_urls_from_file(args["urls_file"]))
+    if not url_list:
+        url_list.extend(load_urls_from_env())
+    if not url_list and not args["start_url"]:
         print("用法:")
         print("  python crawl_all.py <URL>                     # 自动发现 + 爬取")
         print("  python crawl_all.py --urls urls.txt           # 从文件读取 URL 列表")
         print("  python crawl_all.py URL1 URL2 URL3            # 直接传入 URL")
-        print("  python crawl_all.py --force <URL>             # 强制全量爬取（忽略变更检测）")
-        print("  python crawl_all.py --playwright <URL>        # 强制 Playwright")
-        print("  python crawl_all.py --http <URL>              # 强制 HTTP")
+        print("  CRAWL_URLS=url1,url2 python crawl_all.py      # 环境变量传入")
         print()
-        print("示例:")
-        print("  python crawl_all.py https://docs.python.org/3/")
-        print("  python crawl_all.py --urls urls.txt")
-        print("  python crawl_all.py --force --urls urls.txt   # 强制重新爬取所有页面")
+        print("环境变量:")
+        print("  CRAWL_URLS    要爬取的 URL（逗号分隔）")
+        print("  DOC_RAG_MODE  服务模式: api | mcp | mcp-sse")
+        print("  LLM_BASE_URL  LLM 服务地址")
+        print("  MCP_PORT      MCP SSE 端口（默认 9000）")
         return
 
     config_data = load_config()
-
-    # 加载 URL 列表
-    url_list = args["urls"]
-    if args["urls_file"]:
-        url_list.extend(load_urls_from_file(args["urls_file"]))
 
     start_url = url_list[0] if url_list else args["start_url"]
 

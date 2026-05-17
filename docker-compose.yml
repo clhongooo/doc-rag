@@ -9,11 +9,12 @@ services:
       - ./data/sqlite:/app/data/sqlite
       - ./data/images:/app/data/images
       - ./.cache:/app/.cache
-      - ./urls.txt:/app/urls.txt:ro
     environment:
       - PYTHONUNBUFFERED=1
       - DOC_RAG_MODE=api
       - LLM_BASE_URL=http://host.docker.internal:8080/v1
+      # 要爬取的 URL（逗号分隔，也可用 urls.txt 挂载）
+      - CRAWL_URLS=https://cloud.tencent.com/document/product/269/1498,https://cloud.tencent.com/document/product/269/1617
     extra_hosts:
       - "host.docker.internal:host-gateway"
     healthcheck:
@@ -37,5 +38,6 @@ services:
       - DOC_RAG_MODE=mcp-sse
       - MCP_PORT=9000
       - LLM_BASE_URL=http://host.docker.internal:8080/v1
+      - CRAWL_URLS=https://cloud.tencent.com/document/product/269/1498,https://cloud.tencent.com/document/product/269/1617
     extra_hosts:
       - "host.docker.internal:host-gateway"
