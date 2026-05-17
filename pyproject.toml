@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["crawler*", "parser*", "chunker*", "storage*", "retriever*", "generator*", "renderer*", "api*"]
+
+[project]
+name = "doc-rag"
+version = "0.1.0"
+description = "通用文档 RAG 系统：自动爬取 Web 文档，语义切片索引，中文语义检索 + LLM 问答，支持 SPA/静态站、多 LLM 后端、本地 Embedding"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "anthropic>=0.40.0",
+    "openai>=1.50.0",
+    "chromadb>=0.5.0",
+    "beautifulsoup4>=4.12.0",
+    "trafilatura>=1.12.0",
+    "httpx>=0.27.0",
+    "fastapi>=0.115.0",
+    "uvicorn>=0.32.0",
+    "pydantic>=2.9.0",
+    "rank-bm25>=0.2.2",
+    "tiktoken>=0.8.0",
+    "pyyaml>=6.0.2",
+    "lxml>=5.3.0",
+]
+
+[project.optional-dependencies]
+browser = ["playwright>=1.45.0"]
+dev = ["pytest>=8.0.0", "pytest-asyncio>=0.24.0"]
