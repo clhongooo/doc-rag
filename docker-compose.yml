@@ -22,9 +22,11 @@ services:
       timeout: 10s
       retries: 3
 
-  # MCP 模式（stdio，供 Agent 调用）
+  # MCP SSE 模式（HTTP 端口，远程/多 Agent 共享）
   doc-rag-mcp:
     build: .
+    ports:
+      - "9000:9000"
     volumes:
       - ./data/chroma:/app/data/chroma
       - ./data/sqlite:/app/data/sqlite
@@ -32,10 +34,8 @@ services:
       - ./.cache:/app/.cache
     environment:
       - PYTHONUNBUFFERED=1
-      - DOC_RAG_MODE=mcp
+      - DOC_RAG_MODE=mcp-sse
+      - MCP_PORT=9000
       - LLM_BASE_URL=http://host.docker.internal:8080/v1
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    # stdin_open + tty 用于 stdio 通信
-    stdin_open: true
-    tty: true

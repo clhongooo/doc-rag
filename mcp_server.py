@@ -1,5 +1,11 @@
-"""MCP Server — 将 doc-rag 暴露为 MCP 工具供 Agent 调用"""
+"""MCP Server — 将 doc-rag 暴露为 MCP 工具供 Agent 调用
+
+支持两种传输模式：
+  - stdio: 本地 Agent 直接调用（默认）
+  - sse:   HTTP 端口，远程/多 Agent 共享
+"""
 import json
+import os
 import asyncio
 from typing import Optional
 
@@ -105,7 +111,6 @@ async def list_docs(keyword: str = "") -> str:
     Returns:
         文档列表的 JSON 字符串
     """
-    # 从 metadata_db 获取所有唯一 URL
     conn = pipeline.metadata_db.conn
     cursor = conn.execute(
         "SELECT DISTINCT url, title FROM chunks WHERE url LIKE ? ORDER BY url",
@@ -122,4 +127,15 @@ async def list_docs(keyword: str = "") -> str:
 
 
 if __name__ == "__main__":
-    mcp.run(transport="stdio")
+    # 根据环境变量选择传输模式
+    transport = os.getenv("MCP_TRANSPORT", "stdio")
+    port = int(os.getenv("MCP_PORT", "9000"))
+
+    if transport == "sse":
+        # HTTP SSE 模式：Agent 通过 HTTP 连接
+        print(f"[MCP] SSE 模式，端口 {port}")
+        mcp.run(transport="sse", port=port)
+    else:
+        # stdio 模式：本地 Agent 直接调用
+        print("[MCP] stdio 模式")
+        mcp.run(transport="stdio")
