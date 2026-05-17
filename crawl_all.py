@@ -33,12 +33,16 @@ def parse_args() -> dict:
         "strategy": "auto",
         "start_url": "",
         "force": False,
+        "depth": 0,  # 0=不发现子页面, >0=自动发现
     }
 
     i = 0
     while i < len(args):
         if args[i] == "--urls" and i + 1 < len(args):
             result["urls_file"] = args[i + 1]
+            i += 2
+        elif args[i] == "--depth" and i + 1 < len(args):
+            result["depth"] = int(args[i + 1])
             i += 2
         elif args[i] == "--playwright":
             result["strategy"] = "playwright"
@@ -113,6 +117,7 @@ async def smart_crawl(
     config: CrawlConfig,
     url_list: list[str] = None,
     force: bool = False,
+    depth: int = 0,
 ) -> list[CrawlResult]:
     """
     智能爬取：
@@ -129,8 +134,36 @@ async def smart_crawl(
 
     # 确定 URL 列表
     if url_list:
-        urls = url_list
-        print(f"[爬取] 使用传入的 {len(urls)} 个 URL")
+        if depth > 0:
+            # 从每个 URL 发现子页面
+            print(f"[爬取] 从 {len(url_list)} 个 URL 发现子页面 (深度 {depth})...")
+            discovered = set()
+            for seed_url in url_list:
+                config_copy = CrawlConfig(
+                    max_depth=depth,
+                    max_concurrent=config.max_concurrent,
+                    delay_between_requests=config.delay_between_requests,
+                    user_agent=config.user_agent,
+                    timeout=config.timeout,
+                    cache_enabled=config.cache_enabled,
+                    cache_dir=config.cache_dir,
+                    cache_ttl=config.cache_ttl,
+                    max_retries=config.max_retries,
+                    respect_robots=config.respect_robots,
+                    strategy="http",
+                )
+                try:
+                    results = await http_crawler.crawl(seed_url, config_copy)
+                    for r in results:
+                        discovered.add(r.url)
+                    print(f"  {seed_url}: 发现 {len(results)} 个页面")
+                except Exception as e:
+                    print(f"  {seed_url}: 发现失败 - {e}")
+            urls = list(discovered)
+            print(f"[爬取] 共发现 {len(urls)} 个唯一页面")
+        else:
+            urls = url_list
+            print(f"[爬取] 使用传入的 {len(urls)} 个 URL (depth=0, 不发现子页面)")
     else:
         # 自动发现
         print(f"[爬取] 从 {start_url} 自动发现页面...")
@@ -217,14 +250,15 @@ async def main():
         print("用法:")
         print("  python crawl_all.py <URL>                     # 自动发现 + 爬取")
         print("  python crawl_all.py --urls urls.txt           # 从文件读取 URL 列表")
+        print("  python crawl_all.py --depth 2 <URL>           # 从 URL 发现子页面（深度 2）")
         print("  python crawl_all.py URL1 URL2 URL3            # 直接传入 URL")
         print("  CRAWL_URLS=url1,url2 python crawl_all.py      # 环境变量传入")
         print()
-        print("环境变量:")
-        print("  CRAWL_URLS    要爬取的 URL（逗号分隔）")
-        print("  DOC_RAG_MODE  服务模式: api | mcp | mcp-sse")
-        print("  LLM_BASE_URL  LLM 服务地址")
-        print("  MCP_PORT      MCP SSE 端口（默认 9000）")
+        print("参数:")
+        print("  --depth N     自动发现子页面的深度 (默认 0=不发现)")
+        print("  --force       强制全量爬取（忽略变更检测）")
+        print("  --playwright  强制使用 Playwright")
+        print("  --http        强制使用 HTTP")
         return
 
     config_data = load_config()
@@ -250,7 +284,7 @@ async def main():
     print(f"{'=' * 60}")
 
     # 爬取
-    crawl_results = await smart_crawl(start_url, crawl_config, url_list or None, args["force"])
+    crawl_results = await smart_crawl(start_url, crawl_config, url_list or None, args["force"], depth=args["depth"])
     print(f"\n爬取完成: {len(crawl_results)} 个页面")
 
     if not crawl_results:

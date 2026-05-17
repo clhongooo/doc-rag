@@ -3,16 +3,22 @@ set -e
 
 echo "=== doc-rag 启动 ==="
 
-# 1. 首次爬取（优先 urls.txt，其次 CRAWL_URLS 环境变量）
+# 1. 首次爬取
 HAS_DATA=$(python -c "import chromadb; c=chromadb.PersistentClient(path='data/chroma'); print(c.get_collection('doc_chunks').count())" 2>/dev/null || echo "0")
 
 if [ "$HAS_DATA" = "0" ]; then
+    DEPTH="${CRAWL_DEPTH:-0}"
+    DEPTH_ARG=""
+    if [ "$DEPTH" -gt 0 ] 2>/dev/null; then
+        DEPTH_ARG="--depth $DEPTH"
+    fi
+
     if [ -f "urls.txt" ]; then
-        echo "[启动] 首次运行，从 urls.txt 爬取..."
-        python crawl_all.py --urls urls.txt
+        echo "[启动] 首次运行，从 urls.txt 爬取 (depth=$DEPTH)..."
+        python crawl_all.py $DEPTH_ARG --urls urls.txt
     elif [ -n "$CRAWL_URLS" ]; then
-        echo "[启动] 首次运行，从 CRAWL_URLS 环境变量爬取..."
-        python crawl_all.py
+        echo "[启动] 首次运行，从 CRAWL_URLS 环境变量爬取 (depth=$DEPTH)..."
+        python crawl_all.py $DEPTH_ARG
     else
         echo "[启动] 无 URL 配置，跳过爬取"
     fi
