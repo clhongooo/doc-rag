@@ -19,7 +19,7 @@ class GeneratorConfig:
 
 def create_llm_provider(config: GeneratorConfig) -> LLMProvider:
     api_key = config.api_key or os.getenv("LLM_API_KEY")
-    base_url = config.base_url
+    base_url = config.base_url or os.getenv("LLM_BASE_URL")
 
     if config.provider == "anthropic":
         return AnthropicProvider(api_key=api_key, base_url=base_url, model=config.model)

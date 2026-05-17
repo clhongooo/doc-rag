@@ -13,6 +13,10 @@ services:
       - ./urls.txt:/app/urls.txt:ro
     environment:
       - PYTHONUNBUFFERED=1
+      # LLM 地址（宿主机 llama-server）
+      - LLM_BASE_URL=http://host.docker.internal:8080/v1
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/api/status"]
       interval: 30s
